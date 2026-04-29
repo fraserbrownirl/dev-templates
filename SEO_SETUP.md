@@ -100,11 +100,19 @@ Behavior:
 3. Resolve all `getStaticPaths()` async — abort with non-zero exit if any returns zero rows (sanity assertion: catches misconfigured Supabase env vars).
 4. Boot `serve-handler` on a random free port over `dist/`.
 5. Launch Puppeteer headless Chromium. Create a page pool with size from `process.env.PRERENDER_CONCURRENCY` (default 4). Workers pull URLs off a queue.
-6. Per URL: navigate → `page.waitForFunction('window.__PRERENDER_READY__ === true', { timeout: 10000 })` → capture `document.documentElement.outerHTML` → write to `dist/{path}/index.html` (root path → `dist/index.html`, overwriting the SPA shell).
-7. Post-emit secret-leak grep over everything written under `dist/`. Patterns: `service_role`, `\beyJ[A-Za-z0-9_-]{20,}` (long JWT), `postgres://`. Build fails on match.
-8. Log each route as `✓ /path` or `✗ /path: <error>`. Exit non-zero on any route failure.
+6. Per URL: navigate → `page.waitForFunction('window.__PRERENDER_READY__ === true', { timeout: process.env.PRERENDER_READY_TIMEOUT_MS ?? 20000 })` → capture `document.documentElement.outerHTML` → write to `dist/{path}/index.html` (root path → `dist/index.html`, overwriting the SPA shell). On failure, retry once with the same page (configurable via `PRERENDER_RETRIES`, default 2 attempts total).
+7. Post-emit secret-leak grep over everything written under `dist/`. Patterns: `service_role`, `\beyJ[A-Za-z0-9_-]{20,}` (broad JWT-prefix; catches bare tokens), `postgres://`. Build fails on match.
+8. Log each route as `✓ /path` or `✗ /path: <error>`. Exit non-zero on any route failure after all retries are exhausted.
 
-Concurrency tunable without code edits: `PRERENDER_CONCURRENCY=8 PRERENDER=1 npm run build` for local stress tests; production stays at 4. Chromium uses ~200–300 MB per page; 4 pages on a 7 GB GitHub Actions runner is comfortably safe.
+Tunables (all environment variables, no code edits):
+
+| Var | Default | Notes |
+|---|---|---|
+| `PRERENDER_CONCURRENCY` | `4` | Use `1` on GitHub Actions free runners — their network throughput to Supabase REST flakes under parallel load (validated 2026-04-29). Local 8-core Macs handle 4 reliably. |
+| `PRERENDER_READY_TIMEOUT_MS` | `20000` | Bump to `45000` for projects with heavy "load all rows" queries on the homepage. Values <5000 are clamped to 5000. |
+| `PRERENDER_RETRIES` | `2` | Total attempts per route. Each failed attempt logs a `retry` line; only after all attempts fail does the route count as failed. |
+
+Chromium uses ~200–300 MB per page; even 4 pages fit comfortably on a 7 GB GitHub Actions runner — concurrency tuning is about network contention to Supabase, not memory.
 
 ### SPA fallback: `public/_redirects`
 
@@ -141,14 +149,15 @@ jobs:
           VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
           VITE_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.VITE_SUPABASE_PUBLISHABLE_KEY }}
           PRERENDER: '1'
-          PRERENDER_CONCURRENCY: '4'
+          PRERENDER_CONCURRENCY: '1'        # GH Actions runners flake at 2+; raise only on self-hosted/beefy runners
+          PRERENDER_READY_TIMEOUT_MS: '45000'  # raise above default 20000 for heavy homepages
         run: npm run build
       - name: Deploy to Cloudflare Pages
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: pages deploy ./dist --project-name=PROJECT_NAME_HERE  # TODO(human/cursor): replace with actual Cloudflare Pages project name
+          command: pages deploy ./dist --project-name=PROJECT_NAME_HERE --branch=main  # TODO(human/cursor): replace with actual Cloudflare Pages project name
           gitHubToken: ${{ secrets.GITHUB_TOKEN }}
 ```
 

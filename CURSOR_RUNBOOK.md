@@ -10,12 +10,26 @@ Operational guide for Cursor + **GitHub MCP** + **Cloudflare MCP**. The **per-pr
 
 Do this once per Cursor install (global config: `~/.cursor/mcp.json` unless you prefer project-local `.cursor/mcp.json`).
 
+> **Secret hygiene reminder.** Never put literal tokens in `mcp.json`. Use the wrapper-script + env-file + LaunchAgent pattern documented in **§9 MCP Secret Hygiene** below. The snippets in this section show literal placeholders only as a stepping stone — when you actually wire it up, follow §9.
+
 ### GitHub MCP — self-hosted via Docker (recommended)
 
 - **Docs:** [github/github-mcp-server](https://github.com/github/github-mcp-server) → [install-cursor.md](https://github.com/github/github-mcp-server/blob/main/docs/installation-guides/install-cursor.md).
 - **Why local:** the hosted endpoint `https://api.githubcopilot.com/mcp/` is gated behind GitHub Copilot. Self-hosting the official image needs only a **PAT** plus **Docker Desktop**, with no Copilot subscription.
 - **Prereq:** [Docker Desktop](https://www.docker.com/products/docker-desktop/) running on macOS (one-time install, free for personal use).
-- **`mcp.json` fragment** (merge under existing `"mcpServers"`):
+- **Recommended `mcp.json` fragment** (literal-secret-free, references env via wrapper — see §9):
+
+```json
+{
+  "mcpServers": {
+    "github": {
+      "command": "/Users/YOU/.config/cursor-mcp-wrappers/github-mcp.sh"
+    }
+  }
+}
+```
+
+- **Plain fragment** (works but stores secrets in `mcp.json`; prefer the wrapper above):
 
 ```json
 {
@@ -80,7 +94,7 @@ You should see **real data**, not auth errors. Existing chats started before MCP
 
 ## 2. Per-project initial setup prompt
 
-> Status: DRAFT
+> Status: VALIDATED (2026-04-29) on `fraserbrownirl/startupemail` → `https://startupideas.email`. See §10 for cutover lessons learned (apex CNAME flatten, Cloudflare zone-create permission gap, GH Actions network slowness, etc.).
 
 **When to use:** Immediately after Lovable has implemented `SEO_SETUP.md`, committed to `main`, and you have verified `PRERENDER=1 npm run build` locally in Lovable (per contract).
 
@@ -152,7 +166,7 @@ Trigger a fresh prerender build of this project: use GitHub MCP to run workflow_
 
 ## 5. Log diagnose prompt
 
-> Status: DRAFT
+> Status: VALIDATED (2026-04-29) — used to triage 3 failed deploys before run #10 went green.
 
 ```text
 Using GitHub MCP, pull logs for workflow run [RUN_ID or "latest"] on this repo's deploy workflow. Summarize: outcome, slow steps, retries, Puppeteer/prerender errors, wrangler errors. Call out anything that should be fixed in the repo vs transient infrastructure.
@@ -162,7 +176,7 @@ Using GitHub MCP, pull logs for workflow run [RUN_ID or "latest"] on this repo's
 
 ## 6. Custom domain add/change prompt
 
-> Status: DRAFT
+> Status: VALIDATED (2026-04-29) — used to attach `startupideas.email` + `www.startupideas.email` to Pages project, with apex CNAME-flattening through Cloudflare-managed DNS.
 
 ```text
 We need to [add | remove | swap] a custom domain for this Lovable project's Cloudflare Pages deployment.
@@ -184,6 +198,11 @@ Update HANDOVER.md custom domain + DNS provider fields when finished.
 | Build **green** but Google still shows thin pages | Prerendered HTML missing or wrong route | Confirm `dist/.../index.html` exists for the URL; curl live URL; Search Console URL Inspection + request indexing. |
 | Custom domain **Pending** forever | DNS not pointed at Pages | `dig` CNAME/A; compare to Cloudflare Pages required targets; fix registrar or Cloudflare DNS. |
 | Assumed zone on Cloudflare but lookup says **no** | Wrong account or domain under registrar DNS | Fall back to manual DNS instructions; update `HANDOVER.md` DNS provider field. |
+| Custom domain stuck in `validation status: error` ("Validation is in undefined status") | Domain was added before DNS resolved to Pages | DELETE the domain via MCP, POST it again. Validation re-runs cleanly once A/CNAME points at `<project>.pages.dev`. |
+| Cloudflare **MCP can mint API tokens but cannot create zones** | OAuth scope omits `zone.create` | Have human add the zone via dashboard ("Add a site"). MCP can manage records, custom domains, and API tokens after that. |
+| Cloudflare API call → "user email must been verified" | New Cloudflare account never confirmed via email | User clicks verify link in their email or hits "Resend verification" in dashboard. Until done, all account-mutating API calls 403. |
+| GH Actions prerender flakes at default `PRERENDER_CONCURRENCY=4` even with retry-once | GH Actions runners' network to Supabase REST throttles under parallel load | Drop to `PRERENDER_CONCURRENCY=1` and `PRERENDER_READY_TIMEOUT_MS=45000` in workflow env. Local Macs handle 4; GH free runners often need 1. |
+| Cloudflare Pages 308-redirects `/foo` → `/foo/` | Pages default normalization | Functional, but `<link rel="canonical">` in HTML uses no-trailing form so search bots see one redirect hop. Optional fix via `_redirects` rules. |
 
 ---
 
@@ -192,6 +211,159 @@ Update HANDOVER.md custom domain + DNS provider fields when finished.
 - **Session start:** If the repo is a known Lovable SEO project, read `HANDOVER.md` first (it is gitignored; create from `HANDOVER_TEMPLATE.md` if missing).
 - **After operations:** Update timestamps and domain fields whenever you deploy, recover drift, or change DNS/domains.
 - **Lost file:** Reconstruct by reading Cloudflare Pages project name from workflow + MCP, latest successful GitHub Actions run time, and current custom domains — takes seconds, then rewrite `HANDOVER.md` locally.
+
+---
+
+## 9. MCP secret hygiene
+
+The IDE keeps `~/.cursor/mcp.json` open between sessions. Cursor auto-attaches the contents of currently-open files to chat. Any literal token in `mcp.json` will eventually leak into a chat transcript. The fix is to keep `mcp.json` literal-secret-free and route every secret through one of three patterns described below.
+
+### Layout
+
+```text
+~/.config/cursor-secrets.env                                # mode 600 — single source of truth
+~/.config/cursor-mcp-wrappers/
+  github-mcp.sh                                             # wraps dockerized GitHub MCP
+  load-env-launchctl.sh                                     # pushes env into launchctl for GUI Cursor
+  README.md                                                 # local copy of this section
+~/Library/LaunchAgents/
+  com.<user>.cursor-mcp-env.plist                           # runs load-env-launchctl.sh at login
+~/.zshenv                                                   # sources cursor-secrets.env for terminal-launched processes
+~/.cursor/mcp.json                                          # references wrappers + ${env:VAR}; zero literals
+```
+
+### How secrets reach each MCP server
+
+| MCP server type | Example | Secret delivery |
+|---|---|---|
+| stdio (docker) | GitHub MCP | Wrapper script sources env file, exports the var, exec's `docker run -e` |
+| stdio (npx) | n8n-mcp | Wrapper script sources env file, exports the var, exec's `npx` |
+| URL with `headers` auth | Context7 | `mcp.json` uses `${env:VAR_NAME}` interpolation; LaunchAgent populates GUI Cursor's launchctl env so the interpolation resolves |
+| URL with browser OAuth | Cloudflare, Supabase, Vercel, GitHub Copilot-hosted | No local secret; tokens stored by Cursor itself in macOS Keychain or its own cache |
+
+### `~/.config/cursor-secrets.env` template
+
+```bash
+# Mode 600. Never commit. Never paste contents into chat.
+# Reload after editing:
+#   launchctl unload ~/Library/LaunchAgents/com.<user>.cursor-mcp-env.plist
+#   launchctl load   ~/Library/LaunchAgents/com.<user>.cursor-mcp-env.plist
+
+export GITHUB_PERSONAL_ACCESS_TOKEN="github_pat_..."
+export CONTEXT7_API_KEY="ctx7sk-..."
+# add per-server env exports here as you wire up new MCPs
+```
+
+### `~/.config/cursor-mcp-wrappers/github-mcp.sh`
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+source "${HOME}/.config/cursor-secrets.env"
+case "${GITHUB_PERSONAL_ACCESS_TOKEN:-}" in
+  ""|PASTE_HERE_*|REPLACE_AFTER_ROTATION)
+    echo "github-mcp wrapper: GITHUB_PERSONAL_ACCESS_TOKEN unset or placeholder." >&2
+    exit 1
+    ;;
+esac
+exec docker run -i --rm -e GITHUB_PERSONAL_ACCESS_TOKEN ghcr.io/github/github-mcp-server
+```
+
+### `~/.config/cursor-mcp-wrappers/load-env-launchctl.sh`
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+ENV_FILE="${HOME}/.config/cursor-secrets.env"
+[ -r "${ENV_FILE}" ] || exit 0
+while IFS= read -r line; do
+  case "${line}" in
+    export\ *=*)
+      kv="${line#export }"
+      key="${kv%%=*}"
+      val="${kv#*=}"
+      val="${val%\"}"; val="${val#\"}"
+      case "${val}" in ""|PASTE_HERE_*|REPLACE_AFTER_ROTATION) continue ;; esac
+      launchctl setenv "${key}" "${val}"
+      ;;
+  esac
+done < "${ENV_FILE}"
+```
+
+### `~/Library/LaunchAgents/com.<user>.cursor-mcp-env.plist`
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.<user>.cursor-mcp-env</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/<user>/.config/cursor-mcp-wrappers/load-env-launchctl.sh</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+</dict>
+</plist>
+```
+
+### `~/.zshenv`
+
+```bash
+if [ -r "${HOME}/.config/cursor-secrets.env" ]; then
+  set -a
+  source "${HOME}/.config/cursor-secrets.env"
+  set +a
+fi
+```
+
+### Final `~/.cursor/mcp.json`
+
+```json
+{
+  "mcpServers": {
+    "cloudflare": { "url": "https://mcp.cloudflare.com/mcp" },
+    "github":     { "command": "/Users/<user>/.config/cursor-mcp-wrappers/github-mcp.sh" },
+    "supabase":   { "url": "https://mcp.supabase.com/mcp", "headers": {} },
+    "context7":   { "url": "https://mcp.context7.com/mcp", "headers": { "CONTEXT7_API_KEY": "${env:CONTEXT7_API_KEY}" } },
+    "vercel":     { "url": "https://mcp.vercel.com", "headers": {} }
+  }
+}
+```
+
+### Rotation procedure
+
+1. Generate new token at the upstream provider.
+2. Edit `~/.config/cursor-secrets.env`, replace the value.
+3. Either `launchctl unload && launchctl load` the plist, or Cmd+Q and reopen Cursor.
+4. New chat → smoke-test the affected MCP.
+
+### Verification
+
+```bash
+stat -f '%Sp %N' ~/.config/cursor-secrets.env                    # expect: -rw-------
+grep -cE '(github_pat_|eyJ[A-Za-z0-9_-]{20,}|ctx7sk-|sb_secret_)' ~/.cursor/mcp.json   # expect: 0
+launchctl getenv GITHUB_PERSONAL_ACCESS_TOKEN | head -c 11       # expect: github_pat_
+```
+
+---
+
+## 10. Cutover lessons learned (2026-04-29)
+
+Captured from the first end-to-end run on `fraserbrownirl/startupemail` → `https://startupideas.email`. Add to the §2 procedure above for the next project; Cursor should pre-empt these failures rather than rediscover them.
+
+1. **Cloudflare account email verification is a silent gate.** Brand-new Cloudflare accounts can OAuth into the MCP just fine, but every account-mutating API call returns `8000077: Your user email must been verified`. Step 0 of any Cloudflare cutover: confirm the user has clicked the verification email.
+2. **Cloudflare OAuth scope can't create zones.** The MCP's OAuth session can manage Pages projects, mint API tokens, and edit DNS records — but not `POST /zones`. Have the human add the zone via the "Add a site" wizard in the dashboard. After that, hand back to MCP.
+3. **Local repo clone is a prereq, not optional.** `git rm --cached .env` and `PRERENDER=1 npm run build` both need a local clone. If the user doesn't have one, Cursor should clone it (use the wrapper-PAT pattern: `git clone https://${PAT}@github.com/owner/repo.git` then `git remote set-url origin https://github.com/owner/repo.git` to strip the token).
+4. **GitHub Actions Ubuntu runners are slower than the local Mac for Puppeteer + Supabase.** Default `PRERENDER_CONCURRENCY=4` produced 9–75 timeout failures on the runner; `PRERENDER_CONCURRENCY=1` + `PRERENDER_READY_TIMEOUT_MS=45000` got a clean 399/399. Set both in the workflow env block from day one.
+5. **Apex CNAME on Cloudflare-managed zones is automatic.** Once nameservers are switched to Cloudflare, both apex and `www` records can be CNAMEs to `<project>.pages.dev` (Cloudflare flattens at the apex). No ALIAS/ANAME workarounds needed. This makes Cloudflare-managed DNS strictly preferable to keeping the zone on the registrar.
+6. **Mirror existing DNS records before the NS swap.** Cloudflare's "Add a site" wizard auto-imports A/MX/TXT records from the current authoritative resolver. Verify MX/SPF/DKIM/DMARC made it across before the NS cutover so email doesn't blink. (Worked correctly on this run; document so we don't forget to verify next time.)
+7. **The Cloudflare MCP is a JS-execute interface, not a per-endpoint toolset.** It exposes only `search` (against the OpenAPI spec) and `execute` (run JS that calls `cloudflare.request(...)`). Useful pattern: `accountId` is auto-injected into the JS sandbox. Always call `search` first when you don't know the path/body shape for a given operation.
+8. **Custom domain validation can race the DNS swap.** Adding a domain to Pages while DNS is still on the old host puts the domain into `status: deactivated, validation: error: "Validation is in undefined status"`. Recovery: `DELETE` the domain via MCP and `POST` it again. Cleaner: wait until Cloudflare zone status is `active` AND the apex/www records resolve to `<project>.pages.dev` before adding the custom domain at all.
+9. **Cancel stale workflow runs before pushing fixes.** A failed in-progress run on an outdated commit will keep consuming a runner slot and obscure status views. Always `POST /actions/runs/<id>/cancel` after pushing a follow-up fix on `main`.
+10. **GitHub Actions secrets need libsodium sealed-box encryption to set programmatically.** No GitHub MCP tool exposes Actions secrets. Use a tiny Python script with PyNaCl + the GitHub REST API: GET `/actions/secrets/public-key`, encrypt with `SealedBox`, PUT `/actions/secrets/{name}`. Document this in §2 — it's the one CI step where the GitHub MCP can't help.
 
 ---
 
