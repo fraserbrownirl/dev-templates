@@ -92,11 +92,54 @@ You should see **real data**, not auth errors. Existing chats started before MCP
 
 ---
 
+## 1.5 Lovable-side prompt (diff-first, run before §2)
+
+> Status: VALIDATED (2026-05-01). Use this BEFORE the Cursor prompt in §2. Lovable runs first, scaffolds/aligns the project to the spec, then Cursor takes over for the Cloudflare cutover.
+
+**When to use:** New Lovable project, or any existing Lovable project that needs to be brought into spec compliance. Paste this whole block into Lovable chat; Lovable produces a gap report, then asks before applying.
+
+```text
+The canonical SEO prerendering contract for Lovable + Vite + React + Cloudflare Pages projects is:
+https://raw.githubusercontent.com/fraserbrownirl/dev-templates/main/SEO_SETUP.md
+
+Do NOT apply blindly. Do this diff-first:
+
+1. Fetch the spec from the URL above. Read it end-to-end.
+2. Audit this project against the spec, item by item:
+   - prerender.mjs (location, contents, env vars, routes source, ready-signal contract)
+   - src/routes.ts (single source of truth for static + dynamic routes; getStaticPaths)
+   - react-helmet-async usage (per-route Helmets with title/description/canonical/og/twitter)
+   - public/_redirects (SPA fallback `/* /index.html 200` — REQUIRED for Cloudflare Pages target even though Lovable preview hosting ignores it)
+   - .github/workflows/deploy.yml (build + PRERENDER=1 + deploy to Cloudflare Pages via wrangler-action; PRERENDER_CONCURRENCY=1, PRERENDER_READY_TIMEOUT_MS=45000 for Supabase-heavy projects)
+   - package.json scripts (build, build:client per spec)
+   - src/main.tsx (window.__PRERENDER_READY__ + window.__trackPending signal, QUIET_MS >= 200)
+   - .gitignore (.env, HANDOVER.md)
+3. Produce a gap report in this exact form:
+     - "ALREADY COMPLIANT: <list of spec items that already match>"
+     - "DIVERGENT BUT FUNCTIONAL: <items that differ from spec but achieve the goal — list the actual diff>"
+     - "MISSING: <items not present at all>"
+     - "PROPOSED DELTA: <concrete changes you would make, file by file, smallest possible diff>"
+4. STOP and wait for human approval before applying any changes.
+5. Hard rules:
+   - Do not overwrite a working implementation just because it diverges from the spec letter — flag it as DIVERGENT, propose either keep-as-is or align-to-spec, let human pick.
+   - Do not invent or paraphrase the spec if the URL is unreachable. STOP and ask the human to paste it.
+   - Commit SEO_SETUP.md (the actual fetched content) to repo root only AFTER human has approved the delta plan, so future drift checks have the canonical reference in-tree.
+   - Do not deploy. Cursor handles the Cloudflare cutover via §2 of CURSOR_RUNBOOK.md after Lovable hands off.
+
+Hand off to Cursor when:
+- All MISSING items are added
+- All approved DELTA items are applied
+- `PRERENDER=1 npm run build` produces a clean prerender (no timeouts, all routes accounted for)
+- SEO_SETUP.md is committed to repo root
+```
+
+---
+
 ## 2. Per-project initial setup prompt
 
 > Status: VALIDATED (2026-04-29) on `fraserbrownirl/startupemail` → `https://startupideas.email`. See §10 for cutover lessons learned (apex CNAME flatten, Cloudflare zone-create permission gap, GH Actions network slowness, etc.).
 
-**When to use:** Immediately after Lovable has implemented `SEO_SETUP.md`, committed to `main`, and you have verified `PRERENDER=1 npm run build` locally in Lovable (per contract).
+**When to use:** Immediately after Lovable has implemented `SEO_SETUP.md` (via §1.5 above), committed to `main`, and you have verified `PRERENDER=1 npm run build` locally in Lovable (per contract).
 
 **Fill in** the bracketed placeholders, then paste the whole block into Cursor agent mode with the **Lovable project repo** open as the workspace root.
 
