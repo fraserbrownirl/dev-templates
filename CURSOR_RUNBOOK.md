@@ -364,6 +364,18 @@ Captured from the first end-to-end run on `fraserbrownirl/startupemail` → `htt
 8. **Custom domain validation can race the DNS swap.** Adding a domain to Pages while DNS is still on the old host puts the domain into `status: deactivated, validation: error: "Validation is in undefined status"`. Recovery: `DELETE` the domain via MCP and `POST` it again. Cleaner: wait until Cloudflare zone status is `active` AND the apex/www records resolve to `<project>.pages.dev` before adding the custom domain at all.
 9. **Cancel stale workflow runs before pushing fixes.** A failed in-progress run on an outdated commit will keep consuming a runner slot and obscure status views. Always `POST /actions/runs/<id>/cancel` after pushing a follow-up fix on `main`.
 10. **GitHub Actions secrets need libsodium sealed-box encryption to set programmatically.** No GitHub MCP tool exposes Actions secrets. Use a tiny Python script with PyNaCl + the GitHub REST API: GET `/actions/secrets/public-key`, encrypt with `SealedBox`, PUT `/actions/secrets/{name}`. Document this in §2 — it's the one CI step where the GitHub MCP can't help.
+11. **Cloudflare zone-level redirect rules need a separate API token.** The OAuth-scoped Cloudflare MCP can read zone rulesets but cannot write to `PUT /zones/{zid}/rulesets/phases/http_request_dynamic_redirect/entrypoint` — and the deploy-time `CLOUDFLARE_API_TOKEN` (Pages-Write only) also can't. To create Single Redirect rules (e.g. `www → apex`), mint a one-off Cloudflare API token with **`Zone — Zone WAF — Edit`** + **`Zone — Zone — Read`** scoped to the **specific zone** (not the whole account), paste into `~/.config/cursor-secrets.env` as `CLOUDFLARE_API_TOKEN_RULES`, run the API call, then revoke. Account-scoped tokens (`cfat_…` with "Entire Account" resource scope) cannot touch zone-level rulesets even with rule-edit permissions — the token MUST include zone resource scope. Easiest UI path: use the "Edit zone DNS" template as a starter (forces the zone-resource picker), then swap permissions to the WAF/Read combo above.
+
+    Working API call shape:
+    ```bash
+    curl -X PUT \
+      -H "Authorization: Bearer $TOKEN" \
+      -H "Content-Type: application/json" \
+      "https://api.cloudflare.com/client/v4/zones/$ZID/rulesets/phases/http_request_dynamic_redirect/entrypoint" \
+      -d '{"rules":[{"action":"redirect","action_parameters":{"from_value":{"status_code":301,"target_url":{"expression":"concat(\"https://APEX\", http.request.uri.path)"},"preserve_query_string":true}},"expression":"(http.host eq \"www.APEX\")","description":"www to apex 301"}]}'
+    ```
+
+12. **Trailing-slash audit cleanup is a Lovable-side fix, not infra.** Cloudflare Pages serves trailing-slash URLs natively (`/foo/` = 200) and 308-redirects no-slash (`/foo` → `/foo/`). To kill audit flags, update `<link rel="canonical">` in every page Helmet AND `sitemap.xml` to use trailing-slash form (matching what Pages serves). Lovable did this in one prompt for `startupemail` (commit 56384f0). Result: bots crawling sitemap/canonicals get clean 200s; only random external no-slash backlinks see the 308 hop.
 
 ---
 
