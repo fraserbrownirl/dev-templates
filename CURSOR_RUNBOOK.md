@@ -109,11 +109,13 @@ Do NOT apply blindly. Do this diff-first:
    - prerender.mjs (location, contents, env vars, routes source, ready-signal contract)
    - src/routes.ts (single source of truth for static + dynamic routes; getStaticPaths)
    - react-helmet-async usage (per-route Helmets with title/description/canonical/og/twitter)
+   - **index.html — MUST be near-empty.** Forbidden in `index.html`: `<title>` content, `meta name="description|keywords|robots"`, all `og:*`, all `twitter:*`, `<link rel="canonical">`. These belong in Helmet ONLY. If `index.html` has them, every prerendered page will get duplicated head tags and Google will use the first (static) canonical — meaning every page canonicalizes to whatever URL is hardcoded. Validated catastrophic failure mode from prior project.
    - public/_redirects (SPA fallback `/* /index.html 200` — REQUIRED for Cloudflare Pages target even though Lovable preview hosting ignores it)
    - .github/workflows/deploy.yml (build + PRERENDER=1 + deploy to Cloudflare Pages via wrangler-action; PRERENDER_CONCURRENCY=1, PRERENDER_READY_TIMEOUT_MS=45000 for Supabase-heavy projects)
    - package.json scripts (build, build:client per spec)
    - src/main.tsx (window.__PRERENDER_READY__ + window.__trackPending signal, QUIET_MS >= 200)
    - .gitignore (.env, HANDOVER.md)
+   - sitemap.xml + canonical URL form: BOTH must use trailing-slash form (`https://example.com/foo/`) to match what Cloudflare Pages serves at 200. Audit BOTH `public/sitemap.xml` AND any Supabase edge function that emits a sitemap (check `robots.txt` to find which is actually crawled — fix both for consistency). Also audit JSON-LD `ItemList` URL builders.
 3. Produce a gap report in this exact form:
      - "ALREADY COMPLIANT: <list of spec items that already match>"
      - "DIVERGENT BUT FUNCTIONAL: <items that differ from spec but achieve the goal — list the actual diff>"
@@ -443,7 +445,26 @@ Captured from the first end-to-end run on `fraserbrownirl/startupemail` → `htt
       -d '{"rules":[{"action":"redirect","action_parameters":{"from_value":{"status_code":301,"target_url":{"expression":"concat(\"https://APEX\", http.request.uri.path)"},"preserve_query_string":true}},"expression":"(http.host eq \"www.APEX\")","description":"www to apex 301"}]}'
     ```
 
-12. **Trailing-slash audit cleanup is a Lovable-side fix, not infra.** Cloudflare Pages serves trailing-slash URLs natively (`/foo/` = 200) and 308-redirects no-slash (`/foo` → `/foo/`). To kill audit flags, update `<link rel="canonical">` in every page Helmet AND `sitemap.xml` to use trailing-slash form (matching what Pages serves). Lovable did this in one prompt for `startupemail` (commit 56384f0). Result: bots crawling sitemap/canonicals get clean 200s; only random external no-slash backlinks see the 308 hop.
+12. **Trailing-slash audit cleanup is a Lovable-side fix, not infra.** Cloudflare Pages serves trailing-slash URLs natively (`/foo/` = 200) and 308-redirects no-slash (`/foo` → `/foo/`). To kill audit flags, update `<link rel="canonical">` in every page Helmet AND `sitemap.xml` to use trailing-slash form (matching what Pages serves). Lovable did this in one prompt for `startupemail` (commit 56384f0) and `startupplaybook` (commit 9ac4b9f). Result: bots crawling sitemap/canonicals get clean 200s; only random external no-slash backlinks see the 308 hop.
+
+    **Two sitemap sources to fix, not one** (validated 2026-05-01 on `startupplaybook`): some Lovable projects emit sitemap.xml from BOTH a static `public/sitemap.xml` AND a Supabase edge function (e.g. `supabase/functions/generate-sitemap/index.ts`). `robots.txt` typically points at one; the build pipeline at the other. Audit `robots.txt` first to find which file is actually crawled, then update BOTH for consistency. Also check JSON-LD `ItemList` URL builders (e.g. in `Products.tsx`, `Founders.tsx`) — those emit URLs into structured data and need to match.
+
+13. **`index.html` MUST be a near-empty template, not a hardcoded homepage SEO block.** Validated failure mode (2026-05-01 on `startupplaybook` initial Lovable scaffold): if Vite's `index.html` contains `<title>`, `<meta description>`, `og:*`, `twitter:*`, or `<link rel="canonical">` tags, those persist on EVERY prerendered page even though `react-helmet-async` injects per-route equivalents. Helmet only manages tags it owns (it tags them with `data-rh="true"`); it does NOT remove pre-existing static head tags. Result: every prerendered page contains TWO sets of head tags (static + Helmet), and search engines use the FIRST canonical they encounter — which is the static one pointing at `/` — so every page canonicalizes to the homepage. Catastrophic for indexing.
+
+    Required `index.html` content (everything else moves to `<SEOHead>` / Helmet):
+    ```html
+    <head>
+      <meta charset="UTF-8" />
+      <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+      <title></title>  <!-- empty placeholder; Helmet fills per-route -->
+      <link rel="icon" type="image/png" href="/favicon.png" />
+      <link rel="apple-touch-icon" href="/favicon.png" />
+      <meta name="theme-color" content="#0f0f0f" />
+      <!-- + analytics scripts, RSS link, etc. — anything truly site-wide and static -->
+    </head>
+    ```
+
+    Forbidden in `index.html` (must come from Helmet/SEOHead per-route): `<title>` content, `meta name="description|keywords|robots"`, all `og:*`, all `twitter:*`, `<link rel="canonical">`. Add this to the §1.5 Lovable diff-first audit checklist so it's caught at scaffold time, not in the post-deploy SEO audit.
 
 ---
 
