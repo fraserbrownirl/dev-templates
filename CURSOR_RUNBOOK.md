@@ -407,7 +407,32 @@ Captured from the first end-to-end run on `fraserbrownirl/startupemail` → `htt
 8. **Custom domain validation can race the DNS swap.** Adding a domain to Pages while DNS is still on the old host puts the domain into `status: deactivated, validation: error: "Validation is in undefined status"`. Recovery: `DELETE` the domain via MCP and `POST` it again. Cleaner: wait until Cloudflare zone status is `active` AND the apex/www records resolve to `<project>.pages.dev` before adding the custom domain at all.
 9. **Cancel stale workflow runs before pushing fixes.** A failed in-progress run on an outdated commit will keep consuming a runner slot and obscure status views. Always `POST /actions/runs/<id>/cancel` after pushing a follow-up fix on `main`.
 10. **GitHub Actions secrets need libsodium sealed-box encryption to set programmatically.** No GitHub MCP tool exposes Actions secrets. Use a tiny Python script with PyNaCl + the GitHub REST API: GET `/actions/secrets/public-key`, encrypt with `SealedBox`, PUT `/actions/secrets/{name}`. Document this in §2 — it's the one CI step where the GitHub MCP can't help.
-11. **Cloudflare zone-level redirect rules need a separate API token.** The OAuth-scoped Cloudflare MCP can read zone rulesets but cannot write to `PUT /zones/{zid}/rulesets/phases/http_request_dynamic_redirect/entrypoint` — and the deploy-time `CLOUDFLARE_API_TOKEN` (Pages-Write only) also can't. To create Single Redirect rules (e.g. `www → apex`), mint a one-off Cloudflare API token with **`Zone — Zone WAF — Edit`** + **`Zone — Zone — Read`** scoped to the **specific zone** (not the whole account), paste into `~/.config/cursor-secrets.env` as `CLOUDFLARE_API_TOKEN_RULES`, run the API call, then revoke. Account-scoped tokens (`cfat_…` with "Entire Account" resource scope) cannot touch zone-level rulesets even with rule-edit permissions — the token MUST include zone resource scope. Easiest UI path: use the "Edit zone DNS" template as a starter (forces the zone-resource picker), then swap permissions to the WAF/Read combo above.
+11. **Cloudflare zone-level redirect rules need a separate API token with the EXACT permission group.** The OAuth-scoped Cloudflare MCP can read zone rulesets but cannot write to `PUT /zones/{zid}/rulesets/phases/http_request_dynamic_redirect/entrypoint` — and the deploy-time `CLOUDFLARE_API_TOKEN` (Pages-Write only) also can't. To create Single Redirect rules (e.g. `www → apex`), the required permission group is **`Dynamic URL Redirects Write`** (id `74e1036f577a48528b78d2413b40538d`) — NOT `Zone WAF Write` (which returns `request is not authorized` for the dynamic-redirect phase, validated 2026-05-01). Mint via the Cloudflare MCP using the JS execute tool; one-call, no human dashboard fiddle:
+
+    ```javascript
+    // via Cloudflare MCP execute tool
+    async () => {
+      const ZID = 'YOUR_ZONE_ID';
+      const r = await cloudflare.request({
+        method: 'POST',
+        path: `/user/tokens`,
+        body: {
+          name: 'one-shot redirect rule',
+          policies: [{
+            effect: 'allow',
+            resources: { [`com.cloudflare.api.account.zone.${ZID}`]: '*' },
+            permission_groups: [
+              { id: '74e1036f577a48528b78d2413b40538d' }, // Dynamic URL Redirects Write
+              { id: 'c8fed203ed3043cba015a93ad1616f1f' }  // Zone Read
+            ]
+          }]
+        }
+      });
+      return { token_id: r.result?.id, value: r.result?.value };
+    }
+    ```
+
+    Use returned token via `Authorization: Bearer <value>`, push the rule (see API call below), then revoke the token via the Cloudflare dashboard (the OAuth MCP cannot delete tokens it minted — known scope quirk). Account-scoped tokens (`cfat_…` with "Entire Account" resource scope) cannot touch zone-level rulesets even with rule-edit permissions — the token MUST include the zone resource scope.
 
     Working API call shape:
     ```bash
