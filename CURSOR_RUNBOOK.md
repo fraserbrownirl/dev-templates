@@ -187,14 +187,31 @@ Report a short checklist of completed steps and anything the human must still do
 
 ## 3. Drift recovery prompt
 
-> Status: DRAFT
+> Status: VALIDATED (2026-05-06) — used to recover `startupplaybook` after 60+ consecutive Lovable-pushed deploy failures (lockfile drift + Supabase env / Node version drift). Trigger phrase from user is typically "site shows old content" or "site not updating".
 
 ```text
-GitHub Actions failed after a Lovable edit on this repo. Use GitHub MCP to fetch the latest failed workflow run log for the deploy workflow. Identify the failing step and file.
+The user reports site is stale or showing old content. Diagnose drift:
 
-Read SEO_SETUP.md at repo root and HANDOVER.md if present. Diff the broken files against the contract; propose a concrete patch (diff or file-level summary). Do NOT apply changes until I reply "approved". After approval, apply the fix (edit locally or via GitHub MCP as appropriate), trigger workflow_dispatch, and watch the run.
+1. Use GitHub MCP (or REST API with PAT) to fetch the last 10 GH Actions runs for the deploy workflow. Note: how many consecutive failures, when the last green build was, the SHA of the last green build.
 
-Update HANDOVER.md: Last drift event (now), Known divergences if we intentionally deviated from SEO_SETUP.md.
+2. For the most recent failed run, pull the job log and grep for `error|fail|cannot|✗`. Look for these known patterns:
+
+   - `npm error ... Missing: X from lock file` → Lovable added deps without updating package-lock.json. Fix: in deploy.yml change `npm ci` to `rm -f package-lock.json && npm install --no-audit --no-fund`. (See §10 lesson #14.)
+   - `Cannot find module @rollup/rollup-linux-x64-gnu` → npm cross-platform optional-deps bug. Same fix as above.
+   - `Node.js 20 detected without native WebSocket support` → bump `node-version: '22'` in actions/setup-node. (See §10 lesson #15.)
+   - `getStaticPaths for "/foo/:bar" returned 0 paths` → data evolved; filter that previously returned rows now returns []. Drop the route from src/routes.ts (App.tsx still routes it for client-side fallback). (See §10 lesson #16.)
+   - `Aborting` from prerender.mjs → check above; usually a getStaticPaths timeout or 0-paths case.
+
+3. For each fix above, before applying:
+   - Read SEO_SETUP.md at repo root and HANDOVER.md.
+   - State the proposed change (file + diff). Reference the §10 lesson number that documents this exact pattern.
+   - Wait for user approval ("go" or "approved").
+
+4. After approval, apply the fix, push, watch the next run via API polling (60s intervals, ~10 min budget).
+
+5. On success: update HANDOVER.md — bump `Last successful deploy`, add a "Last drift event" line with the date, root cause, and fix applied. Surface anything that requires user action separately (e.g. revoke a token, rotate a key).
+
+If the failure mode is NOT in the §10 catalogue, do a deeper diff against SEO_SETUP.md before guessing a fix. Add a new lesson to dev-templates after recovery so the next project doesn't rediscover.
 ```
 
 ---
@@ -465,6 +482,26 @@ Captured from the first end-to-end run on `fraserbrownirl/startupemail` → `htt
     ```
 
     Forbidden in `index.html` (must come from Helmet/SEOHead per-route): `<title>` content, `meta name="description|keywords|robots"`, all `og:*`, all `twitter:*`, `<link rel="canonical">`. Add this to the §1.5 Lovable diff-first audit checklist so it's caught at scaffold time, not in the post-deploy SEO audit.
+
+14. **CI MUST nuke `package-lock.json` before installing.** Validated recurring failure (2026-05-06 on `startupplaybook`): Lovable's UI adds dependencies (e.g. `papaparse`, `jszip`, `@types/*`) directly to `package.json` without regenerating `package-lock.json`. `npm ci` then fails with `EUSAGE` / "Missing: X from lock file" on every Lovable push, blocking ALL deploys silently — site stays on whatever last shipped, looks "fine" until someone checks Actions and sees N consecutive red runs (we hit 60+ before the user noticed on `startupplaybook`). Workflow build step MUST be:
+
+    ```yaml
+    - run: rm -f package-lock.json && npm install --no-audit --no-fund
+    ```
+
+    Not `npm ci` (fails on drift). Not `npm install` alone (still honors broken lockfile, also hits npm bug #4828 — `Cannot find module @rollup/rollup-linux-x64-gnu` when lockfile generated on darwin and consumed on linux-x64). Nuking lets npm resolve fresh on the linux runner.
+
+    **Drift detection prompt for Cursor:** if user reports "site shows old content / not updating", FIRST step is to check GH Actions run history. Multiple consecutive failures + `npm ci` errors → apply this fix.
+
+15. **`@supabase/supabase-js` requires Node 22+ on GH Actions.** Validated failure (2026-05-06 on `startupplaybook`): recent `@supabase/supabase-js` versions throw `Node.js 20 detected without native WebSocket support` at runtime when `getStaticPaths` opens its first connection. Pin `node-version: '22'` in `actions/setup-node@v4` from day one. Node 20 still works for `vite build` itself — the failure surfaces only when Supabase queries run during prerender.
+
+16. **`getStaticPaths` returning 0 paths can be legitimate after data evolution; the prerender safety check is too strict for it.** Validated case (2026-05-06 on `startupplaybook`): the `/startup/:id` route filtered to rows without slugs (id-form was for legacy URLs only; slug-form was canonical via `/playbook/:slug`). When all rows eventually got slugs, the filter returned `[]` — and prerender.mjs's "abort on 0 paths" safety net killed every build until diagnosed.
+
+    Drift recovery options:
+    - **Preferred**: Remove the now-empty route from `routes.ts`. The pattern can stay declared in `App.tsx` for client-side redirects of legacy URLs without being a prerender target.
+    - **Alternative**: Loosen prerender.mjs to warn-not-abort on 0 paths. But spec hard-rule says abort, so this is a divergence to log in `HANDOVER.md` if used.
+
+    General rule: any `getStaticPaths` whose output depends on a data-shape filter (e.g. "rows without slugs", "draft items only") is fragile — the filter can legitimately return `[]` as data evolves. Such routes should not gate the build.
 
 ---
 
