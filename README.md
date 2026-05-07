@@ -4,8 +4,10 @@ Private templates for **[@fraserbrownirl](https://github.com/fraserbrownirl)**: 
 
 | File | Role |
 | --- | --- |
-| `SEO_SETUP.md` | Drop at **root of each Lovable repo**; Lovable + Cursor treat it as the implementation contract. |
-| `CURSOR_RUNBOOK.md` | Cursor-only: MCP setup, pasteable prompts (DRAFT until validated in Phase B/C), failure modes. |
-| `HANDOVER_TEMPLATE.md` | Copy to a project as gitignored `HANDOVER.md` after Cursor initial setup. |
+| `SEO_SETUP.md` | Drop at **root of each Lovable repo**. Implementation contract for Lovable + Cursor. |
+| `SETUP_PROMPT.md` | Pasteable prompts (init / drift / rebuild). Stays here; copy-paste into Cursor agent mode. |
+| `divergences.mdc` | Copy to each Lovable repo as `.cursor/rules/divergences.mdc` (committed). Project-wide intentional deviations from `SEO_SETUP.md`. Single-file deviations go inline as `// DIVERGENCE: ...` comments. |
 
-**New project:** put `SEO_SETUP.md` in the Lovable repo → Lovable phase → open repo in Cursor → paste the initial setup prompt from `CURSOR_RUNBOOK.md`. Operational meta and phases: `mds/LOVABLE_SEO_TOOL_SPEC.md` in the companion **lovable-seo** repo (same machine / monorepo layout as this pack).
+**New project:** put `SEO_SETUP.md` in the Lovable repo → Lovable phase → open repo in Cursor → paste the INIT block from `SETUP_PROMPT.md`.
+
+**MCP setup** lives in `~/.cursor/mcp.json` — that file is its own documentation. Add a comment block at the top with PAT/OAuth notes if useful.

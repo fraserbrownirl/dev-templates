@@ -1,0 +1,45 @@
+---
+description: Project-wide deviations from SEO_SETUP.md. Both Cursor and Lovable read this before prompt-edits or drift recovery.
+alwaysApply: true
+---
+
+# Divergences from SEO_SETUP.md
+
+This project intentionally deviates from the locked `SEO_SETUP.md` contract in the ways below. Do not "fix" these back to spec — they were chosen on purpose. If a new deviation becomes necessary, append a row; do not delete history.
+
+Single-file deviations live as `// DIVERGENCE: ...` comments in the offending file, not here. This file is for project-wide deviations only.
+
+## Convention
+
+Each entry:
+
+- **What:** the spec rule being broken (quote or paraphrase from `SEO_SETUP.md`).
+- **What we do instead:** the actual behavior in this repo.
+- **Why:** the constraint that forced the deviation.
+- **Removal trigger:** for TEMPORARY divergences only — the observable condition that retires the entry. Cursor checks at session start and proposes flip-and-delete when the trigger fires. Permanent divergences omit this field.
+- **Date / commit:** when the deviation was introduced.
+
+## Active deviations
+
+_None yet. When the first one lands, replace this line with an entry below._
+
+<!--
+Example permanent divergence:
+
+### Helmet replaced with vanilla document.title
+
+- **What:** SEO_SETUP.md §"Per-route meta" mandates `react-helmet-async`.
+- **What we do instead:** Page components set `document.title` and update `<meta name="description">` directly in a `useEffect`.
+- **Why:** Hydration mismatch between Helmet and our analytics SDK was breaking the `__PRERENDER_READY__` signal — Puppeteer captured the HTML before Helmet had flushed.
+- **Date / commit:** 2026-04-15 / abc1234
+
+Example TEMPORARY divergence:
+
+### STRICT_PRERENDER zero-rows abort gated (TEMPORARY)
+
+- **What:** §"Security posture" + §"Prerender script" expect STRICT_PRERENDER=1 in production.
+- **What we do instead:** env unset; build does not abort on empty content tables.
+- **Why:** initial deploy ships before first content sync populates the table.
+- **Removal trigger:** flip STRICT_PRERENDER=1 when the primary content table has >= 10 rows for >= 7 consecutive days. Then delete this entry.
+- **Date / commit:** 2026-05-05 / (env-only)
+-->
